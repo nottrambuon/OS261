@@ -34,4 +34,6 @@ void finish_proc(struct pcb_t * proc);
 }
 #endif
 
+struct pcb_t *find_running_proc_by_pid(struct krnl_t *krnl, uint32_t pid);
+
 #endif

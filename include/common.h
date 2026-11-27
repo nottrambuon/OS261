@@ -108,6 +108,9 @@ struct pcb_t
 	char path[100];
 	struct code_seg_t *code; // Code segment
 	addr_t regs[10];	 // Registers, store address of allocated regions
+#ifdef MM64
+	struct vm_rg_struct kernel_regions[10];
+#endif
 	uint32_t pc;		 // Program pointer, point to the next instruction
 #ifdef MLQ_SCHED
 	// Priority on execution (if supported), on-fly aka. changeable
@@ -139,6 +142,7 @@ struct krnl_t
 	
 #ifdef MM64
 	addr_t *krnl_pgd;
+   addr_t kernel_next_va;
 	addr_t *krnl_p4d;
 	addr_t *krnl_pud;
 	addr_t *krnl_pmd;

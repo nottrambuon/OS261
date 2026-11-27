@@ -47,6 +47,9 @@ static enum ins_opcode_t get_opcode(char * opt) {
 struct pcb_t * load(const char * path) {
 	/* Create new PCB for the new process */
 	struct pcb_t * proc = (struct pcb_t * )malloc(sizeof(struct pcb_t));
+	#ifdef MM64
+	memset(proc->kernel_regions, 0, sizeof(proc->kernel_regions));
+#endif
 	proc->pid = avail_pid;
 	avail_pid++;
 	proc->page_table =

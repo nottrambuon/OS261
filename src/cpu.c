@@ -112,20 +112,53 @@ switch (ins.opcode)
 #endif
 		break;
 	case READ:
-#ifdef MM_PAGING
+#if defined(MM_PAGING) && defined(MM64)
+	{
+		uint32_t value;
+		if (ins.arg_0 >= PAGING_MAX_SYMTBL_SZ ||
+		    ins.arg_2 >= sizeof(proc->regs) / sizeof(proc->regs[0]))
+			break;
+		if (ins.arg_0 < sizeof(proc->regs) / sizeof(proc->regs[0]) &&
+		    proc->kernel_regions[ins.arg_0].rg_start != 0) {
+			stat = -1;
+			break;
+		}
+		stat = libread(proc, ins.arg_0, ins.arg_1, &value);
+		if (stat == 0)
+			proc->regs[ins.arg_2] = value;
+		break;
+	}
+#elif defined(MM_PAGING)
 		stat = libread(proc, ins.arg_0, ins.arg_1, (uint32_t*) &ins.arg_2);
 #else
 		stat = read(proc, ins.arg_0, ins.arg_1, ins.arg_2);
 #endif
 		break;
 	case WRITE:
-#ifdef MM_PAGING
+#if defined(MM_PAGING) && defined(MM64)
+		if (ins.arg_1 >= PAGING_MAX_SYMTBL_SZ ||
+		    (ins.arg_1 < sizeof(proc->regs) / sizeof(proc->regs[0]) &&
+		     proc->kernel_regions[ins.arg_1].rg_start != 0)) {
+			stat = -1;
+			break;
+		}
+		stat = libwrite(proc, ins.arg_0, ins.arg_1, ins.arg_2);
+#elif defined(MM_PAGING)
 		stat = libwrite(proc, ins.arg_0, ins.arg_1, ins.arg_2);
 #else
 		stat = write(proc, ins.arg_0, ins.arg_1, ins.arg_2);
 #endif
 		break;
 	case SYSCALL:
+#ifdef MM_PAGING
+		/* Raw frame operations are reserved for internal memory calls. */
+		if (ins.arg_0 == 17 &&
+		    (ins.arg_1 == SYSMEM_IO_READ ||
+		     ins.arg_1 == SYSMEM_IO_WRITE || ins.arg_1 == SYSMEM_SWP_OP)) {
+			stat = -1;
+			break;
+		}
+#endif
 		stat = libsyscall(proc, ins.arg_0, ins.arg_1, ins.arg_2, ins.arg_3);
 		break;
 	default:

@@ -21,6 +21,102 @@
 
 #if defined(MM64)
 
+static const unsigned int kernel_table_shifts[] = {
+  PAGING64_ADDR_PGD_LOBIT, PAGING64_ADDR_P4D_LOBIT,
+  PAGING64_ADDR_PUD_LOBIT, PAGING64_ADDR_PMD_LOBIT,
+  PAGING64_ADDR_PT_LOBIT
+};
+
+int mm64_resolve_frame(const addr_t *root, addr_t addr, addr_t *fpn)
+{
+  if (root == NULL || fpn == NULL || addr >= PAGING64_ADDR_LIMIT)
+    return -1;
+
+  const addr_t *table = root;
+  for (unsigned int level = 0; level < 4; level++) {
+    addr_t index = (addr >> kernel_table_shifts[level]) &
+                   (PAGING64_TABLE_ENTRIES - 1);
+    table = (const addr_t *)(uintptr_t)table[index];
+    if (table == NULL)
+      return -1;
+  }
+
+  addr_t entry = table[PAGING64_ADDR_PT(addr)];
+  if (!PAGING_PAGE_PRESENT(entry) || (entry & PAGING_PTE_SWAPPED_MASK))
+    return -1;
+  *fpn = PAGING_FPN(entry);
+  return 0;
+}
+
+static int kernel_table_empty(const addr_t *table)
+{
+  for (unsigned int i = 0; i < PAGING64_TABLE_ENTRIES; i++)
+    if (table[i] != 0)
+      return 0;
+  return 1;
+}
+
+/* A zero leaf clears an existing mapping during rollback. */
+static int set_kernel_page(addr_t *table, unsigned int level, addr_t addr,
+                           addr_t leaf)
+{
+  unsigned int shift = kernel_table_shifts[level];
+  addr_t *entry = &table[(addr >> shift) & (PAGING64_TABLE_ENTRIES - 1)];
+
+  if (shift == PAGING64_ADDR_PT_LOBIT) {
+    if (leaf != 0 && *entry != 0)
+      return -1;
+    *entry = leaf;
+    return 0;
+  }
+
+  addr_t *child = (addr_t *)(uintptr_t)*entry;
+  if (child == NULL) {
+    if (leaf == 0)
+      return 0;
+    child = calloc(PAGING64_TABLE_ENTRIES, sizeof(*child));
+    if (child == NULL)
+      return -1;
+    *entry = (addr_t)(uintptr_t)child;
+  }
+
+  int status = set_kernel_page(child, level + 1, addr, leaf);
+  if ((status != 0 || leaf == 0) && kernel_table_empty(child)) {
+    free(child);
+    *entry = 0;
+  }
+  return status;
+}
+
+int mm64_map_kernel_range(addr_t *root, addr_t addr, addr_t first_fpn,
+                          addr_t page_count)
+{
+  const addr_t max_fpn = PAGING_PTE_FPN_MASK >> PAGING_PTE_FPN_LOBIT;
+  if (root == NULL || addr < PAGING64_KERNEL_BASE ||
+      addr >= PAGING64_ADDR_LIMIT || addr % PAGING64_PAGESZ != 0 ||
+      page_count == 0 ||
+      page_count > (PAGING64_ADDR_LIMIT - addr) / PAGING64_PAGESZ ||
+      first_fpn > max_fpn || page_count - 1 > max_fpn - first_fpn)
+    return -1;
+
+  addr_t mapped = 0;
+  for (; mapped < page_count; mapped++) {
+    addr_t leaf = PAGING_PTE_PRESENT_MASK |
+                  ((first_fpn + mapped) << PAGING_PTE_FPN_LOBIT);
+    if (set_kernel_page(root, 0, addr + mapped * PAGING64_PAGESZ, leaf) != 0) {
+      while (mapped > 0) {
+        mapped--;
+        set_kernel_page(root, 0, addr + mapped * PAGING64_PAGESZ, 0);
+      }
+      return -1;
+    }
+  }
+  return 0;
+}
+
+
+
+
 /*
  * init_pte - Initialize PTE entry
  */

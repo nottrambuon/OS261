@@ -62,4 +62,16 @@
 #define PAGING64_ADDR_PGD_MASK  GENMASK64(PAGING64_ADDR_PGD_HIBIT,PAGING64_ADDR_PGD_LOBIT)
 
 
+/* Kernel addresses use the upper half of the simulator's 57-bit range. */
+#define PAGING64_KERNEL_BASE (UINT64_C(1) << (PAGING64_CPU_BUS_WIDTH - 1))
+#define PAGING64_ADDR_LIMIT (UINT64_C(1) << PAGING64_CPU_BUS_WIDTH)
+#define PAGING64_TABLE_ENTRIES 512
+
+/* Resolve a resident page in a five-level root while holding the MM lock. */
+int mm64_resolve_frame(const addr_t *root, addr_t addr, addr_t *fpn);
+
+/* The caller serializes updates to the kernel page tables. */
+int mm64_map_kernel_range(addr_t *root, addr_t addr, addr_t first_fpn,
+                          addr_t page_count);
+
 #endif

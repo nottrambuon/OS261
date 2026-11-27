@@ -19,6 +19,25 @@ static struct queue_t run_queue;
 static pthread_mutex_t queue_lock;
 
 static struct queue_t running_list;
+
+/* A synchronous syscall executes while its caller is owned by its CPU. */
+struct pcb_t *find_running_proc_by_pid(struct krnl_t *krnl, uint32_t pid)
+{
+        struct pcb_t *caller = NULL;
+        pthread_mutex_lock(&queue_lock);
+        if (krnl != NULL && krnl->running_list == &running_list) {
+                for (int i = 0; i < running_list.size; i++) {
+                        struct pcb_t *proc = running_list.proc[i];
+                        if (proc != NULL && proc->pid == pid) {
+                                caller = proc;
+                                break;
+                        }
+                }
+        }
+        pthread_mutex_unlock(&queue_lock);
+        return caller;
+}
+
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
 /* slot[prio] = number of dispatches the queue [prio] still has in this round */
