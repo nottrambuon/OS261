@@ -1,0 +1,14 @@
+# Build output
+obj/
+*.o
+/os
+/mem
+/sched
+/dma_testbench
+syscalltbl.lst
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
