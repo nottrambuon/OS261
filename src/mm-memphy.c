@@ -161,14 +161,11 @@ int MEMPHY_get_freefp(struct memphy_struct *mp, addr_t *retfpn)
    /* 
     * TODO manage free frame list
     */
-   //*retfpn ..
-   // cap nhat lai danh sach free frame
+   *retfpn = fp->fpn;
+   mp->free_fp_list = fp->fp_next;
 
-   /* 
-    * TODO MEMPHY is iteratively used up until its exhausted
-    * No garbage collector acting then it not been released
-    */
-   free(fp);
+   fp->fp_next = mp->used_fp_list;
+   mp->used_fp_list = fp;
 
    return 0;
 }
@@ -179,6 +176,17 @@ int MEMPHY_dump(struct memphy_struct *mp)
    * TODO dump memphy contnt mp->storage
    *     for tracing the memory content
    */
+   if (mp == NULL || mp->storage == NULL)
+      return -1;
+
+   int i;
+   for (i = 0; i < mp->maxsz; i++)
+   {
+      if (mp->storage[i] != 0)
+      {
+         printf("BYTE %08x: %02x\n", i, (uint8_t)mp->storage[i]);
+      }
+   }
 
    return 0;
 }

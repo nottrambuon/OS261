@@ -1,4 +1,5 @@
 #ifndef MM_H
+#define MM_H
 
 #include "common.h"
 #include "bitops.h"
@@ -86,21 +87,20 @@ extern "C" {
 #define PAGING_SWP_MASK  GENMASK(PAGING_SWP_HIBIT,PAGING_SWP_LOBIT)
 
 /* Extract OFFSET */
-//#define PAGING_OFFST(x)  ((x&PAGING_OFFST_MASK) >> PAGING_ADDR_OFFST_LOBIT)
 #define PAGING_OFFST(x)  GETVAL(x,PAGING_OFFST_MASK,PAGING_ADDR_OFFST_LOBIT)
-/* Extract Page Number*/
+/* Extract Page Number */
 #define PAGING_PGN(x)  GETVAL(x,PAGING_PGN_MASK,PAGING_ADDR_PGN_LOBIT)
-/* Extract FramePHY Number*/
+/* Extract FramePHY Number */
 #define PAGING_FPN(x)  GETVAL(x,PAGING_PTE_FPN_MASK,PAGING_PTE_FPN_LOBIT)
-/* Extract SWAPFPN */
-#define PAGING_PGN(x)  GETVAL(x,PAGING_PGN_MASK,PAGING_ADDR_PGN_LOBIT)
 /* Extract SWAPTYPE */
 #define PAGING_PTE_SWPTYP(pte)  GETVAL(pte, PAGING_PTE_SWPTYP_MASK, PAGING_PTE_SWPTYP_LOBIT)
 
 /* Memory range operator */
-/* TODO implement the INCLUDE and OVERLAP checking mechanism */
-#define INCLUDE(x1,x2,y1,y2) (0)
-#define OVERLAP(x1,x2,y1,y2) (0)
+#define INCLUDE(x1,x2,y1,y2) \
+  (((x1) < (x2)) && ((y1) < (y2)) && ((x1) >= (y1)) && ((x2) <= (y2)))
+
+#define OVERLAP(x1,x2,y1,y2) \
+  (((x1) < (x2)) && ((y1) < (y2)) && ((x1) < (y2)) && ((y1) < (x2)))
 
 /* VM region prototypes */
 struct vm_rg_struct * init_vm_rg(addr_t rg_start, addr_t rg_end);
@@ -177,7 +177,6 @@ int init_memphy(struct memphy_struct *mp, addr_t max_size, int randomflg);
 int print_list_fp(struct framephy_struct *fp);
 int print_list_rg(struct vm_rg_struct *rg);
 int print_list_vma(struct vm_area_struct *rg);
-
 
 int print_list_pgn(struct pgn_t *ip);
 int print_pgtbl(struct pcb_t *ip, addr_t start, addr_t end);
