@@ -149,7 +149,8 @@ static void * ld_routine(void * args) {
 	int i = 0;
   /* TODO init kernel page table directory */
 #ifdef MM64
-	os.krnl_pgd = (addr_t*)malloc(PAGING64_MAX_PGN * sizeof(addr_t));
+	os.krnl_pgd = calloc(PAGING64_TABLE_ENTRIES, sizeof(*os.krnl_pgd));
+   os.kernel_next_va = PAGING64_KERNEL_BASE;
 	os.krnl_p4d = NULL;
 	os.krnl_pud = NULL;
 	os.krnl_pmd = NULL;
@@ -175,7 +176,7 @@ static void * ld_routine(void * args) {
 		next_slot(timer_id);
 	}
 #ifdef MM_PAGING
-	proc->mm = (struct mm_struct*)malloc(sizeof(struct mm_struct));
+	proc->mm = calloc(1, sizeof(*proc->mm));
 	init_mm(proc->mm, proc);
 #endif
 		printf("\tLoaded a process at %s, PID: %d PRIO: %ld\n",

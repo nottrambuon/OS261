@@ -195,7 +195,7 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *allo
   regs.a2 = (arg_t)vmaid;
   regs.a3 = (arg_t)inc_sz;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
   {
     pthread_mutex_unlock(&mmvm_lock);
     return -1;
@@ -285,7 +285,7 @@ int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
   if (reg_index < 10)
     proc->regs[reg_index] = addr;
 
-#ifdef IODUMP
+#if defined(IODUMP) && !defined(MM64)
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1);
 #endif
@@ -301,7 +301,7 @@ int libfree(struct pcb_t *proc, uint32_t reg_index)
   if (val < 0)
     return -1;
 
-#ifdef IODUMP
+#if defined(IODUMP) && !defined(MM64)
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1);
 #endif
@@ -341,7 +341,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
       regs.a1 = SYSMEM_SWP_OP;
       regs.a2 = vicfpn;
       regs.a3 = swpfpn;
-      if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+      if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
       {
         MEMPHY_put_freefp(caller->krnl->active_mswp, swpfpn);
         return -1;
@@ -396,7 +396,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   regs.a2 = phyaddr;
   regs.a3 = 0;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
     return -1;
 
   *data = (BYTE)regs.a3;
@@ -424,7 +424,7 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
   regs.a2 = phyaddr;
   regs.a3 = (arg_t)(uint8_t)value;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
     return -1;
 
   return 0;
@@ -465,13 +465,17 @@ int libread(
     return -1;
 
   BYTE data = 0;
+#ifdef MM64
+  int val = __read_user_mem(proc, 0, (int)source, offset, &data);
+#else
   int val = __read(proc, 0, (int)source, offset, &data);
+#endif
   if (val < 0)
     return -1;
 
   *destination = (uint32_t)(uint8_t)data;
 
-#ifdef IODUMP
+#if defined(IODUMP) && !defined(MM64)
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1);
 #endif
@@ -511,11 +515,15 @@ int libwrite(
     uint32_t destination,
     addr_t offset)
 {
+#ifdef MM64
+  int val = __write_user_mem(proc, 0, (int)destination, offset, data);
+#else
   int val = __write(proc, 0, (int)destination, offset, data);
+#endif
   if (val < 0)
     return -1;
 
-#ifdef IODUMP
+#if defined(IODUMP) && !defined(MM64)
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1);
 #endif
@@ -528,42 +536,329 @@ int libwrite(
 
 int libkmem_malloc(struct pcb_t *caller, uint32_t size, uint32_t reg_index)
 {
+  if (caller == NULL || reg_index >= sizeof(caller->regs) / sizeof(caller->regs[0]))
+    return -1;
+
+  addr_t addr;
+  if (__kmalloc(caller, 0, reg_index, size, &addr) != 0)
+    return -1;
+
+  caller->regs[reg_index] = addr;
   return 0;
 }
+
+#ifdef MM64
+/*kmalloc - alloc region memory in kmem
+ *@caller: caller
+ *@vmaid: ID vm area to alloc memory region
+ *@rgid: memory region ID (used to identify variable in symbole table)
+ *@size: memory size
+ *@alloc_addr: allocated address
+ */
+/* Call while holding the lock that protects the free frame list. */
+static int find_contiguous_frames(const struct framephy_struct *free_list,
+                                  addr_t pages_needed, addr_t *first_fpn)
+{
+  if (pages_needed == 0 || first_fpn == NULL)
+    return -1;
+
+  for (const struct framephy_struct *candidate = free_list;
+       candidate != NULL; candidate = candidate->fp_next) {
+    addr_t start = candidate->fpn;
+    addr_t found = 0;
+
+    for (const struct framephy_struct *frame = free_list;
+         frame != NULL; frame = frame->fp_next) {
+      if (frame->fpn >= start && frame->fpn - start < pages_needed)
+        found++;
+    }
+
+    if (found == pages_needed) {
+      *first_fpn = start;
+      return 0;
+    }
+  }
+
+  return -1;
+}
+
+/* Caller holds mmvm_lock while finding and detaching the frames. */
+static struct framephy_struct *detach_contiguous_frames(
+    struct memphy_struct *ram, addr_t first_fpn, addr_t pages_needed)
+{
+  struct framephy_struct **link = &ram->free_fp_list;
+  struct framephy_struct *reserved = NULL;
+
+  while (*link != NULL) {
+    struct framephy_struct *frame = *link;
+
+    if (frame->fpn >= first_fpn &&
+        frame->fpn - first_fpn < pages_needed) {
+      *link = frame->fp_next;
+      frame->fp_next = reserved;
+      reserved = frame;
+    } else {
+      link = &frame->fp_next;
+    }
+  }
+
+  return reserved;
+}
+
+/* Caller holds the lock protecting ram->free_fp_list. */
+static void restore_reserved_frames(struct memphy_struct *ram,
+                                    struct framephy_struct *reserved)
+{
+  while (reserved != NULL) {
+    struct framephy_struct *next = reserved->fp_next;
+
+    reserved->fp_next = ram->free_fp_list;
+    ram->free_fp_list = reserved;
+    reserved = next;
+  }
+}
+
+#endif
 
 addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
+  /* Kernel allocations use one shared address space. */
+  (void)vmaid;
+#ifdef MM64
+  if (rgid < 0 || rgid >= (int)(sizeof(caller->kernel_regions) /
+                               sizeof(caller->kernel_regions[0])))
+    return (addr_t)-1;
+  if (caller == NULL || caller->krnl == NULL || alloc_addr == NULL || size == 0)
+    return (addr_t)-1;
+
+  struct krnl_t *krnl = caller->krnl;
+  struct memphy_struct *ram = krnl->mram;
+  addr_t page_count = size / PAGING64_PAGESZ + (size % PAGING64_PAGESZ != 0);
+  if (ram == NULL || krnl->krnl_pgd == NULL ||
+      page_count > ram->maxsz / PAGING64_PAGESZ)
+    return (addr_t)-1;
+
+  pthread_mutex_lock(&mmvm_lock);
+  addr_t first_fpn;
+  if (find_contiguous_frames(ram->free_fp_list, page_count, &first_fpn) != 0) {
+    pthread_mutex_unlock(&mmvm_lock);
+    return (addr_t)-1;
+  }
+
+  struct framephy_struct *reserved =
+      detach_contiguous_frames(ram, first_fpn, page_count);
+  addr_t addr = krnl->kernel_next_va;
+  if (mm64_map_kernel_range(krnl->krnl_pgd, addr, first_fpn, page_count) != 0) {
+    restore_reserved_frames(ram, reserved);
+    pthread_mutex_unlock(&mmvm_lock);
+    return (addr_t)-1;
+  }
+
+  while (reserved != NULL) {
+    struct framephy_struct *next = reserved->fp_next;
+    reserved->fp_next = ram->used_fp_list;
+    ram->used_fp_list = reserved;
+    reserved = next;
+  }
+  krnl->kernel_next_va = addr + page_count * PAGING64_PAGESZ;
+  caller->kernel_regions[rgid].rg_start = addr;
+  caller->kernel_regions[rgid].rg_end = addr + size;
+  *alloc_addr = addr;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
+#else
+  (void)caller;
+  (void)rgid;
+  (void)size;
+  (void)alloc_addr;
+  return (addr_t)-1;
+#endif
+}
+
+#ifdef MM64
+static int resolve_copy_range(const struct pcb_t *caller, uint32_t id,
+                              addr_t offset, addr_t size, int kernel,
+                              const addr_t **root, addr_t *addr)
+{
+  const struct vm_rg_struct *region;
+  if (kernel) {
+    if (id >= sizeof(caller->kernel_regions) / sizeof(caller->kernel_regions[0]))
+      return -1;
+    region = &caller->kernel_regions[id];
+    *root = caller->krnl->krnl_pgd;
+    if (region->rg_start < PAGING64_KERNEL_BASE ||
+        region->rg_end > PAGING64_ADDR_LIMIT)
+      return -1;
+  } else {
+    if (caller->mm == NULL || id >= PAGING_MAX_SYMTBL_SZ)
+      return -1;
+    region = &caller->mm->symrgtbl[id];
+    *root = caller->mm->pgd;
+    if (region->rg_end > PAGING64_KERNEL_BASE)
+      return -1;
+  }
+
+  if (*root == NULL || region->rg_start >= region->rg_end)
+    return -1;
+  addr_t length = region->rg_end - region->rg_start;
+  if (offset > length || size > length - offset)
+    return -1;
+
+  *addr = region->rg_start + offset;
   return 0;
 }
 
-int libkmem_copy_from_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
+static int copy_ram_address(const struct memphy_struct *ram,
+                            const addr_t *root, addr_t addr, addr_t *physical)
 {
+  addr_t frame;
+  if (mm64_resolve_frame(root, addr, &frame) != 0 ||
+      frame >= ram->maxsz / PAGING64_PAGESZ)
+    return -1;
+
+  *physical = frame * PAGING64_PAGESZ + addr % PAGING64_PAGESZ;
   return 0;
 }
+#endif
 
-int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
+static int copy_between_spaces(struct pcb_t *caller, uint32_t source,
+                               uint32_t destination, uint32_t offset,
+                               uint32_t size, int from_user)
 {
-  return 1;
+#ifdef MM64
+  if (caller == NULL || caller->krnl == NULL || caller->krnl->mram == NULL)
+    return -1;
+  if (size == 0)
+    return 0;
+
+  struct memphy_struct *ram = caller->krnl->mram;
+  if (ram->storage == NULL || !ram->rdmflg)
+    return -1;
+
+  const addr_t *source_root;
+  const addr_t *destination_root;
+  addr_t source_addr;
+  addr_t destination_addr;
+  int status = -1;
+  pthread_mutex_lock(&mmvm_lock);
+  if (resolve_copy_range(caller, source, offset, size, !from_user,
+                         &source_root, &source_addr) != 0 ||
+      resolve_copy_range(caller, destination, offset, size, from_user,
+                         &destination_root, &destination_addr) != 0)
+    goto unlock;
+
+  /* Validate every page before writing to the destination. */
+  for (int copy = 0; copy <= 1; copy++) {
+    for (addr_t done = 0; done < size;) {
+      addr_t src = source_addr + done;
+      addr_t dst = destination_addr + done;
+      addr_t chunk = PAGING64_PAGESZ - src % PAGING64_PAGESZ;
+      addr_t dst_left = PAGING64_PAGESZ - dst % PAGING64_PAGESZ;
+      if (chunk > dst_left)
+        chunk = dst_left;
+      if (chunk > size - done)
+        chunk = size - done;
+
+      addr_t src_phys;
+      addr_t dst_phys;
+      if (copy_ram_address(ram, source_root, src, &src_phys) != 0 ||
+          copy_ram_address(ram, destination_root, dst, &dst_phys) != 0)
+        goto unlock;
+      if (copy)
+        memmove(ram->storage + dst_phys, ram->storage + src_phys, chunk);
+      done += chunk;
+    }
+  }
+  status = 0;
+
+unlock:
+  pthread_mutex_unlock(&mmvm_lock);
+  return status;
+#else
+  (void)caller;
+  (void)source;
+  (void)destination;
+  (void)offset;
+  (void)size;
+  (void)from_user;
+  return -1;
+#endif
 }
 
-int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
+int libkmem_copy_from_user(struct pcb_t *caller, uint32_t source,
+                          uint32_t destination, uint32_t offset, uint32_t size)
 {
-  return 0;
+  return copy_between_spaces(caller, source, destination, offset, size, 1);
 }
 
-int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
+int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source,
+                        uint32_t destination, uint32_t offset, uint32_t size)
 {
-  return 0;
+  return copy_between_spaces(caller, source, destination, offset, size, 0);
 }
 
-int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
+static int access_region_byte(struct pcb_t *caller, uint32_t id,
+                              addr_t offset, BYTE *byte, int kernel, int write)
 {
-  return 0;
+#ifdef MM64
+  if (caller == NULL || caller->krnl == NULL || byte == NULL)
+    return -1;
+
+  struct memphy_struct *ram = caller->krnl->mram;
+  if (ram == NULL || ram->storage == NULL || !ram->rdmflg)
+    return -1;
+
+  const addr_t *root;
+  addr_t addr;
+  addr_t physical;
+  int status = -1;
+  pthread_mutex_lock(&mmvm_lock);
+  if (resolve_copy_range(caller, id, offset, 1, kernel, &root, &addr) == 0 &&
+      copy_ram_address(ram, root, addr, &physical) == 0) {
+    if (write)
+      status = MEMPHY_write(ram, physical, *byte);
+    else
+      status = MEMPHY_read(ram, physical, byte);
+  }
+  pthread_mutex_unlock(&mmvm_lock);
+  return status;
+#else
+  (void)caller;
+  (void)id;
+  (void)offset;
+  (void)byte;
+  (void)kernel;
+  (void)write;
+  return -1;
+#endif
 }
 
-int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
+int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid,
+                      addr_t offset, BYTE *data)
 {
-  return 0;
+  (void)vmaid;
+  return access_region_byte(caller, rgid, offset, data, 1, 0);
+}
+
+int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid,
+                       addr_t offset, BYTE value)
+{
+  (void)vmaid;
+  return access_region_byte(caller, rgid, offset, &value, 1, 1);
+}
+
+int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid,
+                    addr_t offset, BYTE *data)
+{
+  (void)vmaid;
+  return access_region_byte(caller, rgid, offset, data, 0, 0);
+}
+
+int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid,
+                     addr_t offset, BYTE value)
+{
+  (void)vmaid;
+  return access_region_byte(caller, rgid, offset, &value, 0, 1);
 }
 
 /* ================= TV5: Co-processor DMA ================= */
