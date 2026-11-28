@@ -11,7 +11,7 @@ extern "C" {
 #define PAGING64_CPU_BUS_WIDTH 57 /* 57 bit virtual address */
 #define PAGING64_PAGESZ  4096     /* 4KB or 12-bits OFFSET */
 
-#define GENMASK64(h, l) \ (((~0ULL) << (l)) & (~0ULL >> (MM64_BITS_PER_LONG  - (h) - 1)))
+#define GENMASK64(h, l) (((~0ULL) << (l)) & (~0ULL >> (MM64_BITS_PER_LONG - (h) - 1)))
 
 #define PAGING64_MAX_PGN (DIV_ROUND_UP(BIT_ULL(21),PAGING64_PAGESZ))
 #define PAGING64_PAGE_ALIGNSZ(sz) (DIV_ROUND_UP(sz,PAGING64_PAGESZ)*PAGING64_PAGESZ)

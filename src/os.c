@@ -325,6 +325,11 @@ int main(int argc, char * argv[]) {
 	/* Stop timer */
 	stop_timer();
 
+#ifdef MM64
+	mm64_stats_print();   // paging statistics for the report
+#endif
+
+
 	return 0;
 
 }
