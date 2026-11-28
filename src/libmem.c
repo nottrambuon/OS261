@@ -195,7 +195,7 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *allo
   regs.a2 = (arg_t)vmaid;
   regs.a3 = (arg_t)inc_sz;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &(regs)) < 0)
   {
     pthread_mutex_unlock(&mmvm_lock);
     return -1;
@@ -341,7 +341,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
       regs.a1 = SYSMEM_SWP_OP;
       regs.a2 = vicfpn;
       regs.a3 = swpfpn;
-      if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+      if (_syscall(caller->krnl, caller->pid, 17, &(regs)) < 0)
       {
         MEMPHY_put_freefp(caller->krnl->active_mswp, swpfpn);
         return -1;
@@ -396,7 +396,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   regs.a2 = phyaddr;
   regs.a3 = 0;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &(regs)) < 0)
     return -1;
 
   *data = (BYTE)regs.a3;
@@ -424,7 +424,7 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
   regs.a2 = phyaddr;
   regs.a3 = (arg_t)(uint8_t)value;
 
-  if (_syscall(caller->krnl, caller->pid, 17, ®s) < 0)
+  if (_syscall(caller->krnl, caller->pid, 17, &(regs)) < 0)
     return -1;
 
   return 0;
